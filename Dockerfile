@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     less \
     nano \
-    libicu72 \
     && rm -rf /var/lib/apt/lists/*
 
 # PowerShell
