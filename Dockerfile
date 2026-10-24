@@ -28,7 +28,8 @@ RUN mkdir -p /opt/microsoft/powershell/7 && \
 # PowerShell tooling
 RUN pwsh -NoLogo -NonInteractive -Command \
     "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
-     Install-Module -Name PSScriptAnalyzer -Scope AllUsers -Force"
+     Install-Module -Name PSScriptAnalyzer -Scope AllUsers -Force; \
+     Install-Module -Name Pester -Scope AllUsers -Force -SkipPublisherCheck"
 
 # Python dependencies
 COPY requirements.txt .
@@ -39,6 +40,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN git config --system user.email "aider@ai-nuc.local" && \
     git config --system user.name "Aider" && \
     git config --system --add safe.directory '*'
+
+# Orchestrator package
+COPY orch /opt/orch/orch
+COPY tests /opt/orch/tests
+ENV PYTHONPATH=/opt/orch
 
 WORKDIR /app
 
