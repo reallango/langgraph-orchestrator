@@ -1,8 +1,11 @@
 # Where we left off (2026-10-27)
 
-Notes for the next session. The canonical copy of everything is `~/orch-dev` on ai-nuc (lango@192.168.1.161), a
-local git repo (not pushed). GitHub `reallango/langgraph-orchestrator` branch `feat/orch-pipeline` is an OLDER
-version; ask the user before pushing anything there.
+Notes for the next session. The code lives on GitHub `reallango/langgraph-orchestrator` (PUBLIC repo) branch
+`feat/orch-api` (pushed 2026-10-27 at the user's request; builds on `feat/orch-pipeline`; `main` is older, no PR
+yet). Working copy: `~/orch-dev` on ai-nuc (lango@192.168.1.161), on `feat/orch-api` tracking origin. ai-nuc can
+fetch (public) but has NO push credentials; pushing works from the user's Windows PC (Git Bash + gh signed in as
+reallango; clone to a short path like %TEMP%\claude\lgo, the scratchpad path is too long for git). Ask before
+pushing. Keep secrets out: the repo is public.
 
 ## What is deployed
 
