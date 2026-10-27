@@ -25,6 +25,38 @@ def chat(alias: str, messages: list[dict], temperature: float = 0.2,
     return _THINK.sub("", content).strip()
 
 
+def chat_stream(alias: str, messages: list[dict], temperature: float = 0.3,
+                base: str | None = None, key: str | None = None):
+    """Yield the answer text as it is generated. Reasoning (Ollama's `reasoning` field or <think> blocks) is dropped."""
+    body = {"model": alias, "messages": messages, "temperature": temperature, "stream": True}
+    with httpx.stream("POST", f"{base or S.llm_base}/chat/completions", json=body, timeout=S.llm_timeout,
+                      headers={"Authorization": f"Bearer {S.llm_key if key is None else key}"}) as r:
+        r.raise_for_status()
+        thinking, buf = False, ""
+        for line in r.iter_lines():
+            if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                continue
+            try:
+                buf += json.loads(line[6:])["choices"][0]["delta"].get("content") or ""
+            except (ValueError, KeyError, IndexError):
+                continue
+            while buf:                        # strip <think>...</think>, holding back a tag split across chunks
+                tag = "</think>" if thinking else "<think>"
+                at = buf.find(tag)
+                if at >= 0:
+                    if not thinking and at:
+                        yield buf[:at]
+                    thinking, buf = not thinking, buf[at + len(tag):]
+                    continue
+                keep = next((n for n in range(len(tag) - 1, 0, -1) if buf.endswith(tag[:n])), 0)
+                if not thinking and len(buf) > keep:
+                    yield buf[:len(buf) - keep]
+                buf = buf[len(buf) - keep:] if keep else ""
+                break
+        if buf and not thinking:
+            yield buf
+
+
 _BAD_ESCAPE = re.compile(r'\\(?!["\\/bfnrtu])')
 
 

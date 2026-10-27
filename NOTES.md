@@ -11,13 +11,23 @@ version; ask the user before pushing anything there.
   `/v1/chat/completions` (streaming). Usage in README.md. API key in `~/orch-api/api-key` (never print it in chat).
 - Default workflow (`deploy/orch-api.env`) = benchmark config S2: consensus ornith:35b + qwen3-coder:30b, planner
   gpt-oss:20b, no reviewer. Models are the `bench-*` variants (num_ctx 16384, num_predict 8192 thinking / 3072).
-- Untouched and still running: old `orchestrator` container (5-week-old image, idle, goes through LiteLLM) and
-  `litellm`. Retiring LiteLLM is a later step. Open WebUI still only has the LiteLLM connection unless the user
-  added orch-api (Admin Settings > Connections > OpenAI: URL `http://orch-api:8099/v1`, key from the file).
+- Chat flow (added 2026-10-27 at the user's request): a chat is a discussion with the planner (it reads the
+  `files:`); last line `review` = planner writes the task description and both coders give their views (no code);
+  last line `go` = discussion + feedback become the task and consensus codes it. A first message ending in `go` runs
+  as written. Open WebUI background prompts (`### Task:` titles/tags) go straight to the planner.
+- REMOVED 2026-10-27 (user asked; they will remap Open WebUI etc. themselves): containers `litellm` and
+  `orchestrator`. Kept for rollback: images `ghcr.io/berriai/litellm:main-latest`, `langgraph-orchestrator:latest`,
+  config `/srv/appdata/litellm/config.yaml` (+ .bak), data `/srv/appdata/langgraph/`. They were plain `docker run`
+  (no compose). Open WebUI's only connection was LiteLLM, so it needs orch-api added (Admin Settings >
+  Connections > OpenAI: URL `http://orch-api:8099/v1`, key from the file) and Ollama/other models remapped by the
+  user. redis/postgres/cloudflared/portainer untouched. bosun-preview / fake-server / agitated_raman belong to the
+  Bosun overhaul session.
 
-Verified on 2026-10-27 WITHOUT any GPU run: 36 unit tests pass; live: 401 without key, model list, usage reply,
-outside-root repo refused, Open WebUI container reaches orch-api, health shows failover to .131 with AtomEve off.
-NOT yet verified: a real task end to end through the API (GPU), Open WebUI's own request timeout on a 10-20 min
+Verified 2026-10-27: 41 unit tests pass; live: 401 without key, model list, usage reply, outside-root repo refused,
+Open WebUI container reaches orch-api, health shows failover to .131 with AtomEve off. Live GPU chat test on
+ps-scripts/test-script.ps1 (3080 Ti, AtomEve off): discussion reply 45 s (38 s of it loading gpt-oss), `review` 101 s
+(spec + ornith + qwen3-coder views, all sensible), no branch created, repo untouched.
+NOT yet verified: `go` (a real coding run) through the API, and Open WebUI's own request timeout on a 10-20 min
 streamed reply (we send keep-alive comments every 20 s; if Open WebUI cuts off, set AIOHTTP_CLIENT_TIMEOUT on it).
 
 ## Machines and rules
@@ -47,8 +57,11 @@ Caveat: S2 was never run on the 10 tuning tasks and only once per task. ts3 was 
 
 ## Next test (agreed with the user: verify speed + success + that the option truly works)
 
-1. Smoke through the real API: a small task on a scratch repo under /srv/shared/projects (stream it, check branch,
-   diff, cleanup of worktrees and `-b`/`-base` branches). Uses the 3080 Ti for ~10 min: ask before GPU use.
+1. Smoke through the real API: discuss + `review` + `go` on a small task (e.g. the ErrorLines change to
+   ps-scripts/test-script.ps1 used in the chat test, or a scratch repo), ideally from Open WebUI itself. Check the
+   branch, diff, cleanup of worktrees and `-b`/`-base` branches, and that the spec written at `go` reflects the
+   discussion. Uses the 3080 Ti for ~10-15 min: ask before GPU use.
+   Also measure whether `review` improves pass rate (e.g. bench a few tasks with and without a review step).
 2. Confirmation run: S2 config on all 31 tasks (TUNE t3..t13, HOLD t14..t21, TS ts1..ts5), 2 reps. Easiest: copy
    bench5.py to bench6.py with stage S2 over TUNE+HOLD+TS x2 (configs S2 already defined) and supervise like
    supervise5.sh (deadline + PAUSE aware). ~10 h on one GPU; ~half with AtomEve if variants exist there.
@@ -74,7 +87,8 @@ Caveat: S2 was never run on the 10 tuning tasks and only once per task. ts3 was 
 
 - Ollama 500 from .131 on ts4 for W4R (both reps): not investigated.
 - gpt-oss failed to return valid JSON 3x on t14 (planner role!): watch in the S2 confirmation.
-- Later: retire LiteLLM; Docker/Playwright end-to-end testing; IIS/SQL testing design (needs stack details from
+- ps-scripts has untracked leftovers from the OLD aider setup (root-owned `.gitignore`, `.aider*`, Sept 16); not ours.
+- Later: Docker/Playwright end-to-end testing; IIS/SQL testing design (needs stack details from
   the user); clean up losing models; push this repo to GitHub (ask first).
 - Bosun (separate): branch `overhaul/responsive-multinode` on reallango/Bosun, pushed via deploy key
   `~/.ssh/bosun_deploy` (Host alias `github-bosun`) on ai-nuc. Clone: `~/ts-src/Bosun`.

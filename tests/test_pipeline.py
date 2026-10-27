@@ -394,6 +394,16 @@ def test_extract_json_tolerates_regex_backslashes():
     assert got["n"] == 1 and "\\w+" in got["fix"]
 
 
+def test_chat_stream_drops_reasoning(monkeypatch):
+    import httpx
+    events = [{"content": "<thi"}, {"content": "nk>hidden"}, {"content": "</think>Hi"}, {"reasoning": "x"},
+              {"content": " there"}]
+    body = "".join(f"data: {json.dumps({'choices': [{'delta': d}]})}\n\n" for d in events) + "data: [DONE]\n\n"
+    client = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, text=body)))
+    monkeypatch.setattr(httpx, "stream", lambda method, url, **k: client.stream(method, url, json=k["json"]))
+    assert "".join(llm.chat_stream("m", [], base="http://x")) == "Hi there"
+
+
 def test_extract_json_handles_fences_and_prose():
     assert extract_json('Sure!\n```json\n{"a": {"b": "}"}}\n```') == {"a": {"b": "}"}}
 
@@ -414,10 +424,17 @@ def test_parse_chat_directives():
             "repo: proj\nfiles: a.py, b.py\ncheck: pytest -q\ncheck: ruff .\n\nAdd a flag.\nrepo: not-a-directive"}]}])
     assert req["repo"] == "proj" and req["files"] == ["a.py", "b.py"]
     assert req["checks"] == ["pytest -q", "ruff ."]
-    assert req["task"] == "Add a flag.\nrepo: not-a-directive"
-    assert parse_request([{"role": "system", "content": "repo: base\ncheck: x"},
-                          {"role": "user", "content": "do it"}]) == \
-        {"repo": "base", "files": [], "checks": ["x"], "task": "do it"}
+    assert req["task"] == "Add a flag.\nrepo: not-a-directive" and req["command"] is None
+    assert [m["content"] for m in req["discussion"]] == ["old", "Add a flag.\nrepo: not-a-directive"]
+    req = parse_request([{"role": "system", "content": "repo: base\ncheck: x"},
+                         {"role": "user", "content": "files: f.py\nlet's add a flag"},
+                         {"role": "assistant", "content": "Sure: plan..."},
+                         {"role": "user", "content": "sounds good\nGo!"}])
+    assert (req["repo"], req["files"], req["checks"], req["command"], req["task"]) == \
+        ("base", ["f.py"], ["x"], "go", "sounds good")
+    assert [m["role"] for m in req["discussion"]] == ["user", "assistant", "user"]
+    assert parse_request([{"role": "user", "content": "x\n/review"}])["command"] == "review"
+    assert parse_request([{"role": "user", "content": "go ahead and refactor"}])["command"] is None
 
 
 def _client(monkeypatch, tmp_path, key=""):
@@ -435,23 +452,98 @@ def test_openai_models_and_auth(env, monkeypatch, tmp_path):
     assert r.json()["data"][0]["id"] == S.api_model
 
 
-def test_openai_chat_without_repo_explains_usage(env, monkeypatch, tmp_path):
+def test_openai_go_without_repo_explains_usage(env, monkeypatch, tmp_path):
     client, _ = _client(monkeypatch, tmp_path)
-    r = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hello"}]})
+    r = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "add a flag\ngo"}]})
     text = r.json()["choices"][0]["message"]["content"]
     assert "repo:" in text and "proj" in text          # lists the repos it can see
+
+
+def _streamed(client, messages) -> str:
+    with client.stream("POST", "/v1/chat/completions", json={"stream": True, "messages": messages}) as r:
+        return "".join(json.loads(l[6:])["choices"][0]["delta"].get("content", "")
+                       for l in r.iter_lines() if l.startswith("data: {"))
+
+
+def _commit(repo, name, text):
+    (repo / name).write_text(text)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", name], cwd=repo, check=True)
+
+
+def test_openai_discussion_reads_the_repo_and_codes_nothing(env, monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path)
+    _commit(env, "lib.py", "def area(r):\n    return 3 * r\n")
+    seen = {}
+
+    def chat_stream(alias, messages, **kw):
+        seen["messages"] = messages
+        yield "Use math.pi; "
+        yield "send `go` when ready."
+    monkeypatch.setattr(llm, "chat_stream", chat_stream)
+    text = _streamed(client, [{"role": "user", "content": "repo: proj\nfiles: lib.py\nFix area() precision?"}])
+    assert text == "Use math.pi; send `go` when ready."
+    context = "\n".join(m["content"] for m in seen["messages"] if m["role"] == "system")
+    assert "return 3 * r" in context and "lib.py" in context
+    assert seen["messages"][-1] == {"role": "user", "content": "Fix area() precision?"}
+    assert "orch/" not in subprocess.run(["git", "branch"], cwd=env, capture_output=True, text=True).stdout
+
+
+def test_openai_review_asks_each_coder_and_codes_nothing(env, monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(S, "solvers", [("bench-sa", "http://a"), ("bench-sb", "http://b")])
+    monkeypatch.setattr(health, "resolve", lambda alias, home: home)
+    monkeypatch.setattr(llm, "chat", lambda alias, messages, **kw: "Make area() use math.pi.")
+    asked = []
+
+    def chat_stream(alias, messages, **kw):
+        asked.append((alias, messages[-1]["content"]))
+        yield f"{alias} prefers math.pi"
+    monkeypatch.setattr(llm, "chat_stream", chat_stream)
+    text = _streamed(client, [{"role": "user", "content": "repo: proj\nfix area"},
+                              {"role": "assistant", "content": "use math.pi?"},
+                              {"role": "user", "content": "yes\nreview"}])
+    assert "Make area() use math.pi." in text and "bench-sa prefers" in text and "bench-sb prefers" in text
+    assert [a for a, _ in asked] == ["bench-sa", "bench-sb"]
+    assert all("Make area() use math.pi." in prompt for _, prompt in asked)
+    assert "orch/" not in subprocess.run(["git", "branch"], cwd=env, capture_output=True, text=True).stdout
+
+
+def test_openai_go_after_discussion_codes_the_written_spec(env, monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(llm, "chat", lambda alias, messages, **kw: "Make hello.txt say good.")
+    monkeypatch.setattr(llm, "chat_json", fake_llm())
+    monkeypatch.setattr(aider_runner, "run_aider", fake_aider(["good\n"]))
+    text = _streamed(client, [{"role": "user", "content": "repo: proj\ncheck: grep -q good hello.txt\nhello?"},
+                              {"role": "assistant", "content": "Say good?"},
+                              {"role": "user", "content": "yes\ngo"}])
+    assert "Task sent to the coders" in text and "Make hello.txt say good." in text
+    assert "Result: PASSED" in text
+    runs = list((tmp_path / "runs").glob("*/run.json"))
+    assert json.loads(runs[0].read_text())["task"] == "Make hello.txt say good."
+
+
+def test_openai_webui_background_prompts_go_straight_to_the_planner(env, monkeypatch, tmp_path):
+    client, _ = _client(monkeypatch, tmp_path)
+    seen = {}
+
+    def chat_stream(alias, messages, **kw):
+        seen["messages"] = messages
+        yield '{"title": "Error count"}'
+    monkeypatch.setattr(llm, "chat_stream", chat_stream)
+    msgs = [{"role": "user", "content": "### Task:\nGenerate a concise title.\n### Chat History:\nrepo: proj\nx\ngo"}]
+    assert _streamed(client, msgs) == '{"title": "Error count"}'
+    assert seen["messages"] == msgs                            # no planner prompt, no repo context, no run
 
 
 def test_openai_chat_streams_a_run_and_cleans_up(env, monkeypatch, tmp_path):
     client, api = _client(monkeypatch, tmp_path)
     monkeypatch.setattr(llm, "chat_json", fake_llm())
     monkeypatch.setattr(aider_runner, "run_aider", fake_aider(["good\n"]))
-    body = {"stream": True, "messages": [{"role": "user", "content":
-                                          "repo: proj\ncheck: grep -q good hello.txt\nMake hello say good."}]}
-    with client.stream("POST", "/v1/chat/completions", json=body) as r:
-        text = "".join(json.loads(l[6:])["choices"][0]["delta"].get("content", "")
-                       for l in r.iter_lines() if l.startswith("data: {"))
+    text = _streamed(client, [{"role": "user", "content":
+                               "repo: proj\ncheck: grep -q good hello.txt\nMake hello say good.\ngo"}])
     assert "Result: PASSED" in text and "hello.txt" in text   # diff stat of the result branch
+    assert "Task sent to the coders" not in text               # a first message ending in go runs as written
     branches = subprocess.run(["git", "branch"], cwd=env, capture_output=True, text=True).stdout
     worktrees = subprocess.run(["git", "worktree", "list"], cwd=env, capture_output=True, text=True).stdout
     assert branches.count("orch/") == 1 and len(worktrees.splitlines()) == 1

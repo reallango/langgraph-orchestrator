@@ -54,9 +54,16 @@ A machine whose Ollama service is stopped is simply not used.
 
 - OpenAI base URL: `http://orch-api:8099/v1` from containers on `ainet` (Open WebUI), `http://192.168.1.161:8099/v1`
   on the LAN. Model id `orch-consensus`. Bearer key: `~/orch-api/api-key` on ai-nuc.
-- One chat message = one task: `repo:` (git repo under `/srv/shared/projects`), optional `files:` and `check:` lines,
-  then the task. The reply streams progress and ends with the result, branch `orch/<run-id>` and its diff stat.
-  Nothing is merged. Failed runs say to hand the task to Claude.
+- A chat is a design discussion with the planner (gpt-oss), which reads the files named at the top of a message:
+  `repo:` (git repo under `/srv/shared/projects`), optional `files:` and `check:` lines. Then, as the last line of a
+  message:
+  - `review`: the planner writes the task description and each coding model (ornith, qwen3-coder) gives its view
+    (best option, risks, ambiguities). Nothing is coded; discuss the feedback and `review` again if you like.
+  - `go`: the planner turns the whole discussion (including review feedback) into the task and the consensus
+    pipeline codes it. A first message ending in `go` runs as written (handy for scripts).
+- A run's reply streams progress and ends with the result, branch `orch/<run-id>` and its diff stat. Nothing is
+  merged. Failed runs say to hand the task to Claude.
+- Open WebUI's own background prompts (titles, tags; they start with `### Task:`) go straight to the planner.
 - `GET /health` shows which host each role is using right now. Runs are audited in `~/orch-api/runs/<run-id>/`.
 - Native API on the same port: `POST /runs`, `GET /runs`, `GET /runs/{id}`.
 
