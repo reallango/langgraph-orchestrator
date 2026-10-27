@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import langs
 from .config import S
 from .repo import sh
 
@@ -19,11 +20,17 @@ def auto_checks(wt: Path, changed: list[str]) -> list[tuple[str, list[str]]]:
     ps = [f for f in existing if f.lower().endswith(PS_EXT)]
     if ps:
         paths = ",".join("'" + f.replace("'", "''") + "'" for f in ps)
+        # Errors only (syntax / parse problems). Warning-level rules are style: the task may mandate a name that trips
+        # one (e.g. PSUseSingularNouns on Get-BusinessDays) and a lint nit must not reject working code.
         script = (
-            f"$r = foreach ($p in @({paths})) {{ Invoke-ScriptAnalyzer -Path $p -Severity Error,Warning }}; "
+            f"$r = foreach ($p in @({paths})) {{ Invoke-ScriptAnalyzer -Path $p -Severity Error }}; "
             "if ($r) { $r | Format-Table -AutoSize | Out-String -Width 200 | Write-Output; exit 1 }"
         )
         out.append(("PSScriptAnalyzer (changed files)", ["pwsh", "-NoLogo", "-NonInteractive", "-Command", script]))
+    if any(f.lower().endswith((".ts", ".tsx")) for f in existing) and (wt / "tsconfig.json").is_file():
+        langs.ensure_node_modules(wt)
+        if (wt / "node_modules" / ".bin" / "tsc").exists():
+            out.append(("typescript (tsc --noEmit)", ["./node_modules/.bin/tsc", "--noEmit", "-p", "."]))
     return out
 
 

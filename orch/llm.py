@@ -1,4 +1,4 @@
-"""Thin OpenAI-compatible client for LiteLLM, plus tolerant JSON extraction."""
+"""Thin OpenAI-compatible client (LiteLLM or Ollama's /v1), plus tolerant JSON extraction."""
 from __future__ import annotations
 
 import json
@@ -12,16 +12,28 @@ _THINK = re.compile(r"<think>.*?</think>", re.S)
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$", re.M)
 
 
-def chat(alias: str, messages: list[dict], temperature: float = 0.2) -> str:
+def chat(alias: str, messages: list[dict], temperature: float = 0.2,
+         base: str | None = None, key: str | None = None) -> str:
     r = httpx.post(
-        f"{S.llm_base}/chat/completions",
-        headers={"Authorization": f"Bearer {S.llm_key}"},
+        f"{base or S.llm_base}/chat/completions",
+        headers={"Authorization": f"Bearer {S.llm_key if key is None else key}"},
         json={"model": alias, "messages": messages, "temperature": temperature, "stream": False},
         timeout=S.llm_timeout,
     )
     r.raise_for_status()
     content = r.json()["choices"][0]["message"].get("content") or ""
     return _THINK.sub("", content).strip()
+
+
+_BAD_ESCAPE = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _loads(candidate: str) -> dict:
+    """json.loads, retrying with stray backslashes (regexes like \\w that models put in strings) escaped."""
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return json.loads(_BAD_ESCAPE.sub(r"\\\\", candidate))
 
 
 def extract_json(text: str) -> dict:
@@ -47,19 +59,20 @@ def extract_json(text: str) -> dict:
                 depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(text[start : i + 1])
+                        return _loads(text[start : i + 1])
                     except json.JSONDecodeError:
                         break
         start = text.find("{", start + 1)
     raise ValueError("no valid JSON object found")
 
 
-def chat_json(alias: str, messages: list[dict], retries: int = 2) -> tuple[dict, str]:
+def chat_json(alias: str, messages: list[dict], retries: int = 2,
+              base: str | None = None, key: str | None = None) -> tuple[dict, str]:
     """Chat and parse a JSON object, re-asking on malformed output. Returns (obj, raw_text)."""
     msgs = list(messages)
     raw = ""
     for _ in range(retries + 1):
-        raw = chat(alias, msgs)
+        raw = chat(alias, msgs, base=base, key=key)
         try:
             return extract_json(raw), raw
         except ValueError:

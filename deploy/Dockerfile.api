@@ -1,0 +1,10 @@
+# orch-api: the OpenAI-compatible front door. Built on the benchmark image (Python, Aider, pwsh + Pester/PSScriptAnalyzer,
+# Node 22 + shared typescript/vitest in /opt/tsdeps), with the current orchestrator code baked in.
+FROM langgraph-orchestrator:orch-ts
+COPY orch /opt/orch/orch
+COPY tests /opt/orch/tests
+ENV PYTHONPATH=/opt/orch HOME=/tmp/home
+RUN mkdir -p /tmp/home && chmod 1777 /tmp/home
+WORKDIR /opt/orch
+EXPOSE 8099
+CMD ["uvicorn", "orch.api:app", "--host", "0.0.0.0", "--port", "8099"]

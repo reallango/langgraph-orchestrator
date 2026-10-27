@@ -45,7 +45,20 @@ Auto checks on changed files: `py_compile` for `.py`, PSScriptAnalyzer (Error/Wa
 
     docker exec aider sh -c 'cd /opt/orch && pytest -q'
 
-Optional HTTP API: `uvicorn orch.api:app --host 0.0.0.0 --port 8099`.
+## Default deployment: `orch-api` (OpenAI-compatible)
+
+`deploy/run-orch-api.sh` (run on ai-nuc from `~/orch-dev`) builds `langgraph-orchestrator:api` and starts container
+`orch-api` on network `ainet`, port 8099, with the default workflow in `deploy/orch-api.env`: consensus of
+ornith:35b + qwen3-coder:30b, planner gpt-oss:20b, failover between the 3080 Ti (.131) and AtomEve (.15).
+A machine whose Ollama service is stopped is simply not used.
+
+- OpenAI base URL: `http://orch-api:8099/v1` from containers on `ainet` (Open WebUI), `http://192.168.1.161:8099/v1`
+  on the LAN. Model id `orch-consensus`. Bearer key: `~/orch-api/api-key` on ai-nuc.
+- One chat message = one task: `repo:` (git repo under `/srv/shared/projects`), optional `files:` and `check:` lines,
+  then the task. The reply streams progress and ends with the result, branch `orch/<run-id>` and its diff stat.
+  Nothing is merged. Failed runs say to hand the task to Claude.
+- `GET /health` shows which host each role is using right now. Runs are audited in `~/orch-api/runs/<run-id>/`.
+- Native API on the same port: `POST /runs`, `GET /runs`, `GET /runs/{id}`.
 
 ## Delegating from Claude Code
 
